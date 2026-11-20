@@ -1,0 +1,297 @@
+---
+title: "Data_Center_Location_Analysis"
+author: "Cierra"
+date: "2026-11-17"
+output: html_document
+---
+
+```{r}
+# packages
+library(dplyr)
+library(sf)
+library(tigris)
+library(ggplot2)
+```
+
+```{r}
+# look at data
+census <- read.csv("~/ACLU/Data_Center_Project/data/census_tracts.csv")
+
+dc <- read.csv("~/ACLU/Data_Center_Project/data/data_center_w_census_tract.csv")
+
+```
+
+# Analysis
+
+### Question 1:
+
+**Is the share of non-white population in tracts with data centers different from the share of non-white population in tracts without data centers?** 
+
+```{r}
+# merge census data and dc data
+
+census_merge <- census |> left_join(
+  # make indicator for whether tract has dc
+  dc |> mutate(data_center = 1) |> 
+    select(-X, -state), 
+  by = 'GEOID'
+) |> 
+  mutate (data_center = as.integer(!is.na(data_center)))
+```
+
+Some tracts have more than one data center facility. Therefore, the merge resulted in duplicated census rows. The next block of code de-duplicates rows with the same GEOID.
+
+```{r}
+# remove rows with duplicated GEOID (from merging in dc data where more than one data center is sited in an individual tract)
+
+census_merge <- census_merge |> 
+  distinct(GEOID, .keep_all = TRUE)
+```
+
+Next, we separate the census tracts with any data centers from the tracts without data centers.
+
+```{r}
+# tracts with data centers
+tracts_w_dc <- census_merge |> 
+  filter(data_center == 1)
+
+# tracts with data centers
+tracts_no_dc <- census_merge |> 
+  filter(data_center == 0)
+```
+
+Calculate the non-white population share for both tract groups.
+
+```{r}
+# non-white population share for tracts with data centers
+
+dc_nonwhite_prc <- tracts_w_dc %>%
+  summarise(
+    nonwhite_pct = (sum(total, na.rm = TRUE) - sum(white_nh, na.rm = TRUE)) / sum(total, na.rm = TRUE) * 100
+  ) |> 
+  pull(nonwhite_pct)
+
+no_dc_nonwhite_prc <- tracts_no_dc %>%
+  summarise(
+    nonwhite_pct = (sum(total, na.rm = TRUE) - sum(white_nh, na.rm = TRUE)) / sum(total, na.rm = TRUE) * 100
+  ) |> 
+  pull(nonwhite_pct)
+
+cat(
+  "Non-white population share\n",
+  "--------------------------\n",
+  sprintf("Tracts WITH data centers: %.2f%%\n", dc_nonwhite_prc),
+  sprintf("Tracts WITHOUT data centers: %.2f%%\n", no_dc_nonwhite_prc),
+  sprintf("Difference: %.2f percentage points\n", dc_nonwhite_prc - no_dc_nonwhite_prc),
+  sep = ""
+)
+```
+
+Next, focus specifically on the black population share
+
+```{r}
+# black population share for tracts with data centers
+
+dc_black_prc <- tracts_w_dc %>%
+  summarise(
+    black_pct = sum(black_nh, na.rm = TRUE) / sum(total, na.rm = TRUE) * 100
+  ) |> 
+  pull(black_pct)
+
+no_dc_black_prc <- tracts_no_dc %>%
+  summarise(
+    black_pct = sum(black_nh, na.rm = TRUE) / sum(total, na.rm = TRUE) * 100
+  ) |> 
+  pull(black_pct)
+
+cat(
+  "Black population share\n",
+  "--------------------------\n",
+  sprintf("Tracts WITH data centers: %.2f%%\n", dc_black_prc),
+  sprintf("Tracts WITHOUT data centers: %.2f%%\n", no_dc_black_prc),
+  sprintf("Difference: %.2f percentage points\n", dc_black_prc - no_dc_black_prc),
+  sep = ""
+)
+```
+
+#### Focus on one state: Tennessee
+
+```{r}
+# filter for tennessee
+tn_w_dc <- tracts_w_dc |> 
+  filter(state == 'Tennessee')
+
+tn_no_dc <- tracts_no_dc |> 
+  filter(state == 'Tennessee')
+```
+
+```{r}
+# black population share for tracts with data centers
+
+tn_dc_black_prc <- tn_w_dc %>%
+  summarise(
+    black_pct = sum(black_nh, na.rm = TRUE) / sum(total, na.rm = TRUE) * 100
+  ) |> 
+  pull(black_pct)
+
+tn_no_dc_black_prc <- tn_no_dc %>%
+  summarise(
+    black_pct = sum(black_nh, na.rm = TRUE) / sum(total, na.rm = TRUE) * 100
+  ) |> 
+  pull(black_pct)
+
+cat(
+  "Tennessee: Black population share\n",
+  "--------------------------\n",
+  sprintf("Tracts WITH data centers: %.2f%%\n", tn_dc_black_prc),
+  sprintf("Tracts WITHOUT data centers: %.2f%%\n", tn_no_dc_black_prc),
+  sprintf("Difference: %.2f percentage points\n", tn_dc_black_prc - tn_no_dc_black_prc),
+  sep = ""
+)
+```
+
+**State-Level Analysis**
+
+```{r}
+# function to calculate difference for all states
+group_share_by_state <- function(data, group_var) {
+  data |>
+    group_by(state) |>
+    summarise(
+      n_tracts_dc     = sum(data_center == 1, na.rm = TRUE),
+      pct_dc          = sum({{ group_var }}[data_center == 1], na.rm = TRUE) /
+                        sum(total[data_center == 1], na.rm = TRUE) * 100,
+      pct_no_dc       = sum({{ group_var }}[data_center == 0], na.rm = TRUE) /
+                        sum(total[data_center == 0], na.rm = TRUE) * 100,
+      .groups = "drop"
+    ) |>
+    mutate(diff_pct_pts = pct_dc - pct_no_dc)
+}
+```
+
+```{r}
+black_by_state <- group_share_by_state(census_merge, black_nh)
+black_by_state
+```
+
+Next, we can look at the top ten states for black population share differences.
+
+```{r}
+# look at top ten states for black population share differences
+
+top10_black <- black_by_state |>
+  filter(n_tracts_dc > 0) |>
+  slice_max(diff_pct_pts, n = 10) |>
+  mutate(across(c(pct_dc, pct_no_dc, diff_pct_pts), ~ round(.x, 1)))
+
+top10_black
+
+```
+
+### Map
+
+Starting with Tennessee, we map the Black population share by tract with facilities overlaid as points.
+
+```{r}
+
+# get tract boundaries for TN, using 2020 census
+tn_tracts <- tracts(state = "TN", year = 2020, cb = TRUE)
+
+tn <- census_merge |>
+  filter(total > 0, state == 'Tennessee')
+
+# join your tract-level data
+tn_map <- tn_tracts |>
+  left_join(
+    tn |> 
+      mutate(GEOID = as.character(GEOID)) |> 
+      select(GEOID, pct_black_nh, data_center),
+    by = "GEOID"
+  )
+
+# TO DO: using centroids but change to lat and long
+fac_pts <- tn_map |>
+  filter(data_center == 1) |>
+  st_centroid()
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = tn_map, aes(fill = pct_black_nh),
+          color = "white", linewidth = 0.05) +
+  geom_sf(data = fac_pts, shape = 21, fill = "red", color = "white",
+          size = 2.5, stroke = 0.4) +
+  scale_fill_fermenter(
+    palette = "Blues", direction = 1,
+    breaks = c(5, 10, 25, 50, 75),
+    na.value = "grey90",
+    name = "Black population\nshare (%)"
+  ) +
+  labs(
+    title = "Black population share and data center locations, Tennessee",
+    subtitle = "Red dots mark tracts with a data center"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.key.width = unit(1.6, "cm"),
+    legend.key.height = unit(0.3, "cm"),
+    legend.title = element_text(size = 9, vjust = 0.8),
+    plot.title = element_text(face = "bold", size = 14),
+    plot.margin = margin(5, 5, 5, 5)
+  )
+
+```
+
+### **Simple Logistic Regression**
+
+Below, we run a simple logistic regression, controlling for tract population size and state fixed effects. In the future, we'd also like to control for additional factors like household income, home values, etc.
+
+```{r}
+library(fixest)
+
+model_df <- census_merge |>
+  filter(total > 0) |>
+  mutate(
+    black_share = black_nh / total * 100,   # percentage points
+    log_pop     = log(total)
+  )
+
+
+# model: tract population and state fixed effects
+model <- feglm(data_center ~ black_share + log_pop | state,
+            data = model_df, family = binomial,
+            cluster = ~state)
+
+etable(model)
+```
+
+Nationally, there is no statistically significant relationship between a tract’s Black population share and whether it has a data center.
+
+As an odds ratio, exp(0.0006) ≈ 1.0006. Each additional percentage point of Black population is associated with about a 0.06% change in the odds of a data center. Per 10 points, that’s roughly 0.6%.
+
+Now we look just at Tennessee.
+
+```{r}
+
+# just for tennessee
+
+tn_model_df <- census_merge |>
+  filter(total > 0, state == 'Tennessee') |>
+  mutate(
+    black_share = black_nh / total * 100,   # percentage points
+    log_pop     = log(total)
+  )
+
+
+# model: tract population
+tn_model <- feglm(data_center ~ black_share + log_pop,
+               data = tn_model_df, family = binomial,
+               vcov = "hetero")
+
+etable(tn_model)
+```
+
+In Tennessee, tracts with a higher Black population share are **significantly more likely** to have a data center, after controlling for tract population.
+
+Per 10 points increase in a tract's Black population share: exp(0.149) ≈ 1.16; about **16% higher odds of hosting a data center.**
